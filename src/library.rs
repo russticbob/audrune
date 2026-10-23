@@ -1,13 +1,22 @@
-use std::{fs, path::Path};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    time::Duration,
+};
 
-use lofty::{file::TaggedFileExt, prelude::Accessor, probe::Probe};
+use lofty::{
+    file::{AudioFile, TaggedFileExt},
+    prelude::Accessor,
+    probe::Probe,
+};
 
 pub struct Song {
     pub artist: String,
     pub album: String,
     pub title: String,
     pub track: Option<u32>,
-    pub path: std::path::PathBuf,
+    pub duration: Duration,
+    pub path: PathBuf,
 }
 
 pub fn scan_music(root: &Path) -> Vec<Song> {
@@ -46,6 +55,9 @@ fn scan_directory(dir: &Path, songs: &mut Vec<Song>) {
             continue;
         };
 
+        // Audio properties are independent of artist/title tags.
+        let duration = tagged.properties().duration();
+
         let tag = tagged.primary_tag().or_else(|| tagged.first_tag());
 
         let title = tag
@@ -75,6 +87,7 @@ fn scan_directory(dir: &Path, songs: &mut Vec<Song>) {
             album,
             title,
             track,
+            duration,
             path,
         });
     }

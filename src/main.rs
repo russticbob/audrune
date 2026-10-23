@@ -1,7 +1,7 @@
 mod library;
 mod player;
 
-use std::{collections::BTreeMap, io, path::PathBuf};
+use std::{collections::BTreeMap, io, path::PathBuf, time::Duration};
 
 use crossterm::{
     event::{self, Event, KeyCode, KeyEventKind},
@@ -14,7 +14,7 @@ use ratatui::{
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout},
     style::{Color, Modifier, Style},
-    widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
+    widgets::{Block, Borders, Gauge, List, ListItem, ListState, Paragraph},
 };
 
 // HEVY — TOKYO NIGHT
@@ -98,6 +98,11 @@ impl App {
     }
 }
 
+fn format_time(duration: Duration) -> String {
+    let seconds = duration.as_secs();
+    format!("{:02}:{:02}", seconds / 60, seconds % 60)
+}
+
 fn main() -> io::Result<()> {
     let music_dir =
         PathBuf::from(std::env::var_os("HOME").expect("HOME directory not found")).join("Music");
@@ -113,6 +118,7 @@ fn main() -> io::Result<()> {
     }
 
     let backend = CrosstermBackend::new(stdout);
+
     let mut terminal = match Terminal::new(backend) {
         Ok(terminal) => terminal,
         Err(error) => {
@@ -160,8 +166,9 @@ fn run(
 
     let mut app = App::new();
 
-    // Initialize Rodio once, keeping the audio device alive.
-    let audio = player::AudioPlayer::new().map_err(|error| io::Error::other(error.to_string()))?;
+    // Keep the audio device alive for the entire session.
+    let mut audio =
+        player::AudioPlayer::new().map_err(|error| io::Error::other(error.to_string()))?;
 
     loop {
         let (heading, entries): (String, Vec<String>) = match &app.view {
@@ -179,6 +186,29 @@ fn run(
             ),
         };
 
+        // Live playback data.
+        let position = audio.position();
+        let duration = audio.duration();
+
+        let progress = duration
+            .filter(|total| !total.is_zero())
+            .map(|total| (position.as_secs_f64() / total.as_secs_f64()).clamp(0.0, 1.0))
+            .unwrap_or(0.0);
+
+        let elapsed_label = format_time(position);
+
+        let duration_label = duration.map(format_time).unwrap_or_else(|| "--:--".into());
+
+        let playback_status = if app.now_playing.is_none() {
+            app.status.clone()
+        } else if audio.is_finished() {
+            "Finished".into()
+        } else if audio.is_paused() {
+            "Paused".into()
+        } else {
+            "Playing".into()
+        };
+
         terminal.draw(|frame| {
             let sections = Layout::default()
                 .direction(Direction::Vertical)
@@ -189,6 +219,7 @@ fn run(
                 ])
                 .split(frame.area());
 
+            // Header.
             let header = Paragraph::new("◆ HEVY / LOCAL MUSIC")
                 .style(Style::default().fg(CYAN).add_modifier(Modifier::BOLD))
                 .block(
@@ -199,11 +230,13 @@ fn run(
 
             frame.render_widget(header, sections[0]);
 
+            // Browser / player columns.
             let columns = Layout::default()
                 .direction(Direction::Horizontal)
                 .constraints([Constraint::Percentage(65), Constraint::Percentage(35)])
                 .split(sections[1]);
 
+            // Library browser.
             let items: Vec<ListItem> = entries
                 .iter()
                 .enumerate()
@@ -232,20 +265,31 @@ fn run(
 
             frame.render_stateful_widget(list, columns[0], &mut list_state);
 
+            // Player panel.
             let album_count: usize = music.values().map(|a| a.len()).sum();
 
             let playing = app.now_playing.as_deref().unwrap_or("Nothing playing");
 
+            let player_sections = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Min(8), Constraint::Length(3)])
+                .split(columns[1]);
+
             let info = format!(
-                "Artists: {}\nAlbums: {}\nTracks: {}\n\n\
-                 NOW PLAYING\n{}\n\n\
+                "Artists: {}\n\
+                 Albums: {}\n\
+                 Tracks: {}\n\n\
+                 NOW PLAYING\n\
+                 {}\n\n\
                  Status: {}\n\n\
-                 Enter: Play\nSpace: Pause/Resume\nS: Stop",
+                 Enter: Play\n\
+                 Space: Pause/Resume\n\
+                 S: Stop",
                 music.len(),
                 album_count,
                 songs.len(),
                 playing,
-                app.status,
+                playback_status,
             );
 
             let details = Paragraph::new(info).style(Style::default().fg(TEXT)).block(
@@ -255,8 +299,23 @@ fn run(
                     .border_style(Style::default().fg(PURPLE)),
             );
 
-            frame.render_widget(details, columns[1]);
+            frame.render_widget(details, player_sections[0]);
 
+            // Live playback progress.
+            let progress_bar = Gauge::default()
+                .block(
+                    Block::default()
+                        .title(format!(" {} / {} ", elapsed_label, duration_label))
+                        .borders(Borders::ALL)
+                        .border_style(Style::default().fg(PURPLE)),
+                )
+                .gauge_style(Style::default().fg(CYAN).bg(Color::Rgb(41, 46, 66)))
+                .ratio(progress)
+                .label("");
+
+            frame.render_widget(progress_bar, player_sections[1]);
+
+            // Footer.
             let footer = Paragraph::new(
                 " ↑↓ Navigate  → Open  ← Back  Enter Play  Space Pause  S Stop  Q Quit ",
             )
@@ -265,6 +324,11 @@ fn run(
 
             frame.render_widget(footer, sections[2]);
         })?;
+
+        // Refresh the interface every 100 ms.
+        if !event::poll(Duration::from_millis(100))? {
+            continue;
+        }
 
         if let Event::Key(key) = event::read()? {
             if key.kind != KeyEventKind::Press {
@@ -293,10 +357,16 @@ fn run(
                 KeyCode::Enter => match &app.view {
                     View::Songs(artist, album) => {
                         if let Some(song) = music[artist][album].get(app.selected) {
+                            // Play exactly once.
                             match audio.play(&song.path) {
                                 Ok(()) => {
+                                    // Lofty provides duration
+                                    // when Rodio cannot.
+                                    audio.set_duration(song.duration);
+
                                     app.now_playing =
                                         Some(format!("{}\n{}", song.artist, song.title));
+
                                     app.status = "Playing".into();
                                 }
                                 Err(error) => {
@@ -309,8 +379,9 @@ fn run(
                 },
 
                 KeyCode::Char(' ') => {
-                    audio.toggle_pause();
-                    app.status = "Pause/resume toggled".into();
+                    if app.now_playing.is_some() && !audio.is_finished() {
+                        audio.toggle_pause();
+                    }
                 }
 
                 KeyCode::Char('s') => {

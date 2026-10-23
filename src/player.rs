@@ -1,10 +1,11 @@
-use std::{fs::File, io::BufReader, path::Path};
+use std::{fs::File, io::BufReader, path::Path, time::Duration};
 
-use rodio::{Decoder, DeviceSinkBuilder, MixerDeviceSink, Player};
+use rodio::{Decoder, DeviceSinkBuilder, MixerDeviceSink, Player, Source};
 
 pub struct AudioPlayer {
     _device: MixerDeviceSink,
     player: Player,
+    duration: Option<Duration>,
 }
 
 impl AudioPlayer {
@@ -15,16 +16,22 @@ impl AudioPlayer {
         Ok(Self {
             _device: device,
             player,
+            duration: None,
         })
     }
 
-    pub fn play(&self, path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    pub fn play(&mut self, path: &Path) -> Result<(), Box<dyn std::error::Error>> {
         let file = File::open(path)?;
         let source = Decoder::new(BufReader::new(file))?;
+
+        // Read the duration before moving the source into Rodio.
+        let duration = source.total_duration();
 
         self.player.stop();
         self.player.append(source);
         self.player.play();
+
+        self.duration = duration;
 
         Ok(())
     }
@@ -37,7 +44,29 @@ impl AudioPlayer {
         }
     }
 
-    pub fn stop(&self) {
+    pub fn stop(&mut self) {
         self.player.stop();
+        self.duration = None;
+    }
+
+    pub fn position(&self) -> Duration {
+        self.player.get_pos()
+    }
+
+    pub fn duration(&self) -> Option<Duration> {
+        self.duration
+    }
+
+    pub fn set_duration(&mut self, duration: Duration) {
+        if !duration.is_zero() {
+            self.duration = Some(duration);
+        }
+    }
+    pub fn is_paused(&self) -> bool {
+        self.player.is_paused()
+    }
+
+    pub fn is_finished(&self) -> bool {
+        self.player.empty()
     }
 }
