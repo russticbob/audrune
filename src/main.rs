@@ -17,7 +17,7 @@ use ratatui::{
     widgets::{Block, Borders, Gauge, List, ListItem, ListState, Paragraph},
 };
 
-// HEVY — TOKYO NIGHT
+// Tokyo Night color palette.
 const CYAN: Color = Color::Rgb(125, 207, 255);
 const PURPLE: Color = Color::Rgb(187, 154, 247);
 const TEXT: Color = Color::Rgb(192, 202, 245);
@@ -110,6 +110,7 @@ fn main() -> io::Result<()> {
     let songs = library::scan_music(&music_dir);
 
     enable_raw_mode()?;
+
     let mut stdout = io::stdout();
 
     if let Err(error) = execute!(stdout, EnterAlternateScreen) {
@@ -142,6 +143,7 @@ fn run(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     songs: &[library::Song],
 ) -> io::Result<()> {
+    // Organize music by artist, album, and track.
     let mut music: MusicLibrary = BTreeMap::new();
 
     for song in songs {
@@ -166,11 +168,11 @@ fn run(
 
     let mut app = App::new();
 
-    // Keep the audio device alive for the entire session.
     let mut audio =
         player::AudioPlayer::new().map_err(|error| io::Error::other(error.to_string()))?;
 
     loop {
+        // Build the current library view.
         let (heading, entries): (String, Vec<String>) = match &app.view {
             View::Artists => ("ARTISTS".into(), music.keys().cloned().collect()),
             View::Albums(artist) => (
@@ -186,7 +188,7 @@ fn run(
             ),
         };
 
-        // Live playback data.
+        // Playback information.
         let position = audio.position();
         let duration = audio.duration();
 
@@ -221,7 +223,11 @@ fn run(
 
             // Header.
             let header = Paragraph::new("◆ HEVY / LOCAL MUSIC")
-                .style(Style::default().fg(CYAN).add_modifier(Modifier::BOLD))
+                .style(
+                    Style::default()
+                        .fg(CYAN)
+                        .add_modifier(Modifier::BOLD),
+                )
                 .block(
                     Block::default()
                         .borders(Borders::ALL)
@@ -230,26 +236,36 @@ fn run(
 
             frame.render_widget(header, sections[0]);
 
-            // Browser / player columns.
+            // Main columns.
             let columns = Layout::default()
                 .direction(Direction::Horizontal)
-                .constraints([Constraint::Percentage(65), Constraint::Percentage(35)])
+                .constraints([
+                    Constraint::Percentage(65),
+                    Constraint::Percentage(35),
+                ])
                 .split(sections[1]);
 
-            // Library browser.
+            // Library list.
             let items: Vec<ListItem> = entries
                 .iter()
                 .enumerate()
                 .map(|(i, name)| {
-                    let prefix = if i == app.selected { "▸ " } else { "  " };
+                    let prefix = if i == app.selected {
+                        "▸ "
+                    } else {
+                        "  "
+                    };
 
                     let style = if i == app.selected {
-                        Style::default().fg(CYAN).add_modifier(Modifier::BOLD)
+                        Style::default()
+                            .fg(CYAN)
+                            .add_modifier(Modifier::BOLD)
                     } else {
                         Style::default().fg(TEXT)
                     };
 
-                    ListItem::new(format!("{prefix}{name}")).style(style)
+                    ListItem::new(format!("{prefix}{name}"))
+                        .style(style)
                 })
                 .collect();
 
@@ -260,19 +276,32 @@ fn run(
                     .border_style(Style::default().fg(PURPLE)),
             );
 
-            let mut list_state =
-                ListState::default().with_selected((!entries.is_empty()).then_some(app.selected));
+            let mut list_state = ListState::default()
+                .with_selected(
+                    (!entries.is_empty()).then_some(app.selected),
+                );
 
-            frame.render_stateful_widget(list, columns[0], &mut list_state);
+            frame.render_stateful_widget(
+                list,
+                columns[0],
+                &mut list_state,
+            );
 
-            // Player panel.
-            let album_count: usize = music.values().map(|a| a.len()).sum();
+            // Player information.
+            let album_count: usize =
+                music.values().map(|albums| albums.len()).sum();
 
-            let playing = app.now_playing.as_deref().unwrap_or("Nothing playing");
+            let playing = app
+                .now_playing
+                .as_deref()
+                .unwrap_or("Nothing playing");
 
             let player_sections = Layout::default()
                 .direction(Direction::Vertical)
-                .constraints([Constraint::Min(8), Constraint::Length(3)])
+                .constraints([
+                    Constraint::Min(8),
+                    Constraint::Length(3),
+                ])
                 .split(columns[1]);
 
             let info = format!(
@@ -284,6 +313,8 @@ fn run(
                  Status: {}\n\n\
                  Enter: Play\n\
                  Space: Pause/Resume\n\
+                 F: Forward 10s\n\
+                 R: Rewind 10s\n\
                  S: Stop",
                 music.len(),
                 album_count,
@@ -292,40 +323,55 @@ fn run(
                 playback_status,
             );
 
-            let details = Paragraph::new(info).style(Style::default().fg(TEXT)).block(
-                Block::default()
-                    .title(" HEVY PLAYER ")
-                    .borders(Borders::ALL)
-                    .border_style(Style::default().fg(PURPLE)),
-            );
+            let details = Paragraph::new(info)
+                .style(Style::default().fg(TEXT))
+                .block(
+                    Block::default()
+                        .title(" HEVY PLAYER ")
+                        .borders(Borders::ALL)
+                        .border_style(Style::default().fg(PURPLE)),
+                );
 
             frame.render_widget(details, player_sections[0]);
 
-            // Live playback progress.
+            // Live progress bar.
             let progress_bar = Gauge::default()
                 .block(
                     Block::default()
-                        .title(format!(" {} / {} ", elapsed_label, duration_label))
+                        .title(format!(
+                            " {} / {} ",
+                            elapsed_label,
+                            duration_label
+                        ))
                         .borders(Borders::ALL)
                         .border_style(Style::default().fg(PURPLE)),
                 )
-                .gauge_style(Style::default().fg(CYAN).bg(Color::Rgb(41, 46, 66)))
+                .gauge_style(
+                    Style::default()
+                        .fg(CYAN)
+                        .bg(Color::Rgb(41, 46, 66)),
+                )
                 .ratio(progress)
                 .label("");
 
-            frame.render_widget(progress_bar, player_sections[1]);
+            frame.render_widget(
+                progress_bar,
+                player_sections[1],
+            );
 
             // Footer.
             let footer = Paragraph::new(
-                " ↑↓ Navigate  → Open  ← Back  Enter Play  Space Pause  S Stop  Q Quit ",
+                " ↑↓ Navigate  → Open  ← Back  Enter Play  Space Pause  F +10s  R -10s  S Stop  Q Quit ",
             )
             .style(Style::default().fg(MUTED))
-            .block(Block::default().borders(Borders::ALL));
+            .block(
+                Block::default().borders(Borders::ALL),
+            );
 
             frame.render_widget(footer, sections[2]);
         })?;
 
-        // Refresh the interface every 100 ms.
+        // Redraw every 100 milliseconds.
         if !event::poll(Duration::from_millis(100))? {
             continue;
         }
@@ -357,11 +403,9 @@ fn run(
                 KeyCode::Enter => match &app.view {
                     View::Songs(artist, album) => {
                         if let Some(song) = music[artist][album].get(app.selected) {
-                            // Play exactly once.
                             match audio.play(&song.path) {
                                 Ok(()) => {
-                                    // Lofty provides duration
-                                    // when Rodio cannot.
+                                    // Use Lofty's duration metadata.
                                     audio.set_duration(song.duration);
 
                                     app.now_playing =
@@ -381,6 +425,22 @@ fn run(
                 KeyCode::Char(' ') => {
                     if app.now_playing.is_some() && !audio.is_finished() {
                         audio.toggle_pause();
+                    }
+                }
+
+                KeyCode::Char('f') => {
+                    if app.now_playing.is_some() && !audio.is_finished() {
+                        if let Err(error) = audio.seek_forward() {
+                            app.status = format!("Seek error: {error}");
+                        }
+                    }
+                }
+
+                KeyCode::Char('r') => {
+                    if app.now_playing.is_some() && !audio.is_finished() {
+                        if let Err(error) = audio.seek_backward() {
+                            app.status = format!("Seek error: {error}");
+                        }
                     }
                 }
 
