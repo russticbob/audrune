@@ -1,4 +1,5 @@
 mod library;
+mod player;
 
 use std::{collections::BTreeMap, io, path::PathBuf};
 
@@ -16,18 +17,11 @@ use ratatui::{
     widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
 };
 
-// --------------------------------------------------
-// HEVY COLORS — TOKYO NIGHT
-// --------------------------------------------------
-
+// HEVY — TOKYO NIGHT
 const CYAN: Color = Color::Rgb(125, 207, 255);
 const PURPLE: Color = Color::Rgb(187, 154, 247);
 const TEXT: Color = Color::Rgb(192, 202, 245);
 const MUTED: Color = Color::Rgb(86, 95, 137);
-
-// --------------------------------------------------
-// LIBRARY NAVIGATION
-// --------------------------------------------------
 
 #[derive(Clone)]
 enum View {
@@ -43,6 +37,8 @@ struct App {
     selected: usize,
     artist_selected: usize,
     album_selected: usize,
+    now_playing: Option<String>,
+    status: String,
 }
 
 impl App {
@@ -52,17 +48,19 @@ impl App {
             selected: 0,
             artist_selected: 0,
             album_selected: 0,
+            now_playing: None,
+            status: "Ready to play".into(),
         }
+    }
+
+    fn up(&mut self) {
+        self.selected = self.selected.saturating_sub(1);
     }
 
     fn down(&mut self, count: usize) {
         if count > 0 {
             self.selected = (self.selected + 1).min(count - 1);
         }
-    }
-
-    fn up(&mut self) {
-        self.selected = self.selected.saturating_sub(1);
     }
 
     fn enter(&mut self, entries: &[String]) {
@@ -76,28 +74,22 @@ impl App {
                 self.view = View::Albums(entry.clone());
                 self.selected = 0;
             }
-
             View::Albums(artist) => {
                 self.album_selected = self.selected;
                 self.view = View::Songs(artist.clone(), entry.clone());
                 self.selected = 0;
             }
-
-            View::Songs(_, _) => {
-                // Playback will be implemented next.
-            }
+            View::Songs(_, _) => {}
         }
     }
 
     fn back(&mut self) {
         match &self.view {
             View::Artists => {}
-
             View::Albums(_) => {
                 self.view = View::Artists;
                 self.selected = self.artist_selected;
             }
-
             View::Songs(artist, _) => {
                 self.view = View::Albums(artist.clone());
                 self.selected = self.album_selected;
@@ -106,10 +98,6 @@ impl App {
     }
 }
 
-// --------------------------------------------------
-// MAIN
-// --------------------------------------------------
-
 fn main() -> io::Result<()> {
     let music_dir =
         PathBuf::from(std::env::var_os("HOME").expect("HOME directory not found")).join("Music");
@@ -117,25 +105,32 @@ fn main() -> io::Result<()> {
     let songs = library::scan_music(&music_dir);
 
     enable_raw_mode()?;
-
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen)?;
+
+    if let Err(error) = execute!(stdout, EnterAlternateScreen) {
+        disable_raw_mode()?;
+        return Err(error);
+    }
 
     let backend = CrosstermBackend::new(stdout);
-    let mut terminal = Terminal::new(backend)?;
+    let mut terminal = match Terminal::new(backend) {
+        Ok(terminal) => terminal,
+        Err(error) => {
+            disable_raw_mode()?;
+            let mut stdout = io::stdout();
+            let _ = execute!(stdout, LeaveAlternateScreen);
+            return Err(error);
+        }
+    };
 
     let result = run(&mut terminal, &songs);
 
-    disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
-    terminal.show_cursor()?;
+    let _ = disable_raw_mode();
+    let _ = execute!(terminal.backend_mut(), LeaveAlternateScreen);
+    let _ = terminal.show_cursor();
 
     result
 }
-
-// --------------------------------------------------
-// APPLICATION LOOP
-// --------------------------------------------------
 
 fn run(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
@@ -165,15 +160,16 @@ fn run(
 
     let mut app = App::new();
 
+    // Initialize Rodio once, keeping the audio device alive.
+    let audio = player::AudioPlayer::new().map_err(|error| io::Error::other(error.to_string()))?;
+
     loop {
         let (heading, entries): (String, Vec<String>) = match &app.view {
-            View::Artists => ("ARTISTS".to_string(), music.keys().cloned().collect()),
-
+            View::Artists => ("ARTISTS".into(), music.keys().cloned().collect()),
             View::Albums(artist) => (
                 format!("ALBUMS / {artist}"),
                 music[artist].keys().cloned().collect(),
             ),
-
             View::Songs(artist, album) => (
                 format!("{artist} / {album}"),
                 music[artist][album]
@@ -193,7 +189,6 @@ fn run(
                 ])
                 .split(frame.area());
 
-            // Header
             let header = Paragraph::new("◆ HEVY / LOCAL MUSIC")
                 .style(Style::default().fg(CYAN).add_modifier(Modifier::BOLD))
                 .block(
@@ -204,13 +199,11 @@ fn run(
 
             frame.render_widget(header, sections[0]);
 
-            // Main columns
             let columns = Layout::default()
                 .direction(Direction::Horizontal)
                 .constraints([Constraint::Percentage(65), Constraint::Percentage(35)])
                 .split(sections[1]);
 
-            // Library entries
             let items: Vec<ListItem> = entries
                 .iter()
                 .enumerate()
@@ -239,40 +232,40 @@ fn run(
 
             frame.render_stateful_widget(list, columns[0], &mut list_state);
 
-            // Information panel
             let album_count: usize = music.values().map(|a| a.len()).sum();
+
+            let playing = app.now_playing.as_deref().unwrap_or("Nothing playing");
 
             let info = format!(
                 "Artists: {}\nAlbums: {}\nTracks: {}\n\n\
-                 Selected: {}\n\n\
-                 Playback coming soon...",
+                 NOW PLAYING\n{}\n\n\
+                 Status: {}\n\n\
+                 Enter: Play\nSpace: Pause/Resume\nS: Stop",
                 music.len(),
                 album_count,
                 songs.len(),
-                entries
-                    .get(app.selected)
-                    .map(String::as_str)
-                    .unwrap_or("None"),
+                playing,
+                app.status,
             );
 
             let details = Paragraph::new(info).style(Style::default().fg(TEXT)).block(
                 Block::default()
-                    .title(" LIBRARY INFO ")
+                    .title(" HEVY PLAYER ")
                     .borders(Borders::ALL)
                     .border_style(Style::default().fg(PURPLE)),
             );
 
             frame.render_widget(details, columns[1]);
 
-            // Footer
-            let footer = Paragraph::new(" ↑↓ Navigate  → Open  ← Back  Enter Select  Q Quit ")
-                .style(Style::default().fg(MUTED))
-                .block(Block::default().borders(Borders::ALL));
+            let footer = Paragraph::new(
+                " ↑↓ Navigate  → Open  ← Back  Enter Play  Space Pause  S Stop  Q Quit ",
+            )
+            .style(Style::default().fg(MUTED))
+            .block(Block::default().borders(Borders::ALL));
 
             frame.render_widget(footer, sections[2]);
         })?;
 
-        // Keyboard input
         if let Event::Key(key) = event::read()? {
             if key.kind != KeyEventKind::Press {
                 continue;
@@ -289,12 +282,41 @@ fn run(
                     app.down(entries.len());
                 }
 
-                KeyCode::Right | KeyCode::Enter | KeyCode::Char('l') => {
+                KeyCode::Right | KeyCode::Char('l') => {
                     app.enter(&entries);
                 }
 
                 KeyCode::Left | KeyCode::Backspace | KeyCode::Char('h') => {
                     app.back();
+                }
+
+                KeyCode::Enter => match &app.view {
+                    View::Songs(artist, album) => {
+                        if let Some(song) = music[artist][album].get(app.selected) {
+                            match audio.play(&song.path) {
+                                Ok(()) => {
+                                    app.now_playing =
+                                        Some(format!("{}\n{}", song.artist, song.title));
+                                    app.status = "Playing".into();
+                                }
+                                Err(error) => {
+                                    app.status = format!("Playback error: {error}");
+                                }
+                            }
+                        }
+                    }
+                    _ => app.enter(&entries),
+                },
+
+                KeyCode::Char(' ') => {
+                    audio.toggle_pause();
+                    app.status = "Pause/resume toggled".into();
+                }
+
+                KeyCode::Char('s') => {
+                    audio.stop();
+                    app.status = "Stopped".into();
+                    app.now_playing = None;
                 }
 
                 _ => {}

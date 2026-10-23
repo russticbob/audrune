@@ -7,6 +7,7 @@ pub struct Song {
     pub album: String,
     pub title: String,
     pub track: Option<u32>,
+    pub path: std::path::PathBuf,
 }
 
 pub fn scan_music(root: &Path) -> Vec<Song> {
@@ -74,6 +75,7 @@ fn scan_directory(dir: &Path, songs: &mut Vec<Song>) {
             album,
             title,
             track,
+            path,
         });
     }
 }
