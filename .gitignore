@@ -1,1 +1,5 @@
 /target
+
+# Local source backups
+*.backup
+*.pre-*
