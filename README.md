@@ -102,28 +102,28 @@ HEVY is under active development. The following roadmap outlines planned functio
 - [x] Audio metadata extraction
 - [x] Artist and album browsing
 - [x] Basic audio playback controls
-- [ ] Playback progress and duration tracking
-- [ ] Automatic track advancement
-- [ ] Previous and next track controls
-- [ ] Playback queue management
+- [x] Playback progress and duration tracking
+- [x] Automatic track advancement
+- [x] Previous and next track controls
+- [x] Playback queue management
 
 ### Phase 2 — Interface and Visualization
 
-- [ ] Dedicated Now Playing interface
+- [x] Dedicated Now Playing interface
 - [ ] Real-time audio spectrum visualization
 - [ ] Embedded album artwork
 - [ ] Automatic retrieval of missing album artwork
 - [ ] Local artwork caching
 - [ ] Branded fallback artwork
 - [ ] Customizable themes
-- [ ] Responsive terminal layouts
+- [x] Responsive terminal layouts
 
 ### Phase 3 — Library Management
 
 - [ ] Configurable music directories
 - [ ] Library search and filtering
-- [ ] Playlist creation and management
-- [ ] Shuffle and repeat modes
+- [x] Playlist creation and management
+- [x] Shuffle and repeat modes
 - [ ] Improved metadata handling
 - [ ] Library refresh and change detection
 
