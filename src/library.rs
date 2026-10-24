@@ -1,5 +1,5 @@
 use std::{
-    fs,
+    env, fs,
     path::{Path, PathBuf},
     time::Duration,
 };
@@ -21,8 +21,49 @@ pub struct Song {
 
 pub fn scan_music(root: &Path) -> Vec<Song> {
     let mut songs = Vec::new();
+
+    // Scan the user's music library.
     scan_directory(root, &mut songs);
+
+    // Also scan AUDRUNE's bundled demo music.
+    if let Some(demo_dir) = find_demo_directory() {
+        // Avoid scanning the same directory twice.
+        if !demo_dir.starts_with(root) {
+            scan_directory(&demo_dir, &mut songs);
+        }
+    }
+
     songs
+}
+
+fn find_demo_directory() -> Option<PathBuf> {
+    let mut candidates = Vec::new();
+
+    // Development: launched from the AUDRUNE project directory.
+    if let Ok(cwd) = env::current_dir() {
+        candidates.push(cwd.join("assets/demo"));
+    }
+
+    // Installed application: demo music next to the executable.
+    if let Ok(exe) = env::current_exe() {
+        if let Some(bin_dir) = exe.parent() {
+            candidates.push(bin_dir.join("assets/demo"));
+            candidates.push(bin_dir.join("demo"));
+
+            // Development: target/debug or target/release.
+            if let Some(project_dir) = bin_dir.parent().and_then(|p| p.parent()) {
+                candidates.push(project_dir.join("assets/demo"));
+            }
+
+            // Conventional Linux installation:
+            // /usr/bin/audrune -> /usr/share/audrune/demo
+            if let Some(prefix) = bin_dir.parent() {
+                candidates.push(prefix.join("share/audrune/demo"));
+            }
+        }
+    }
+
+    candidates.into_iter().find(|path| path.is_dir())
 }
 
 fn scan_directory(dir: &Path, songs: &mut Vec<Song>) {
@@ -55,9 +96,7 @@ fn scan_directory(dir: &Path, songs: &mut Vec<Song>) {
             continue;
         };
 
-        // Audio properties are independent of artist/title tags.
         let duration = tagged.properties().duration();
-
         let tag = tagged.primary_tag().or_else(|| tagged.first_tag());
 
         let title = tag
