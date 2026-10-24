@@ -11,10 +11,16 @@ makedepends=('cargo')
 source=(
     "audrune-${_pkgver}.tar.gz::${url}/archive/refs/tags/v${_pkgver}.tar.gz"
 )
-sha256sums=('SKIP')
+sha256sums=('a7b7617ddaf0309adc7447fa46502e356eb8d71bc2d46e12c46c3282e17b3975')
 
 prepare() {
-    cd "$srcdir/audrune-${_pkgver}"
+    cd "$srcdir"
+
+    if [[ -d "Audrune-${_pkgver}" ]]; then
+        mv "Audrune-${_pkgver}" "audrune-${_pkgver}"
+    fi
+
+    cd "audrune-${_pkgver}"
     export CARGO_HOME="$srcdir/cargo-home"
     cargo fetch --locked
 }

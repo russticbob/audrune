@@ -13,3 +13,22 @@
 # Local source backups
 *.backup
 *.pre-*
+
+# Rust build artifacts
+/target/
+
+# Arch packaging build artifacts
+/packaging/src/
+/packaging/pkg/
+/packaging/cargo-home/
+/packaging/cargo-target/
+/packaging/*.tar.gz
+/packaging/*.pkg.tar.zst
+/packaging/*.log
+
+# Leftovers from earlier packaging builds
+/src/audrune-0.7.1-beta/
+/src/audrune-0.7.1-beta.tar.gz
+
+# Portable release artifacts
+/dist/
