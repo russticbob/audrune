@@ -3,8 +3,8 @@ mod player;
 
 use std::{
     collections::{BTreeMap, VecDeque},
-    io,
-    path::PathBuf,
+    fs, io,
+    path::{Path, PathBuf},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -33,6 +33,8 @@ enum View {
     Artists,
     Albums(String),
     Songs(String, String),
+    Playlists,
+    PlaylistSongs(String),
 }
 
 type MusicLibrary<'a> = BTreeMap<String, BTreeMap<String, Vec<&'a library::Song>>>;
@@ -110,6 +112,13 @@ struct PlayingTrack {
     index: usize,
 }
 
+#[derive(Clone, Copy)]
+enum PlaylistAction {
+    Clear,
+    Delete,
+    RemoveSong(usize),
+}
+
 struct App {
     view: View,
     selected: usize,
@@ -118,6 +127,12 @@ struct App {
     now_playing: Option<String>,
     playing_track: Option<PlayingTrack>,
     queue: VecDeque<PlayingTrack>,
+    playlist_up_next: VecDeque<PlayingTrack>,
+    playlist_playing: bool,
+    playlists: BTreeMap<String, Vec<PathBuf>>,
+    active_playlist: Option<String>,
+    naming_playlist: Option<String>,
+    pending_playlist_action: Option<(String, PlaylistAction)>,
     repeat_mode: RepeatMode,
     shuffle_mode: ShuffleMode,
     show_help: bool,
@@ -134,6 +149,12 @@ impl App {
             now_playing: None,
             playing_track: None,
             queue: VecDeque::new(),
+            playlist_up_next: VecDeque::new(),
+            playlist_playing: false,
+            playlists: BTreeMap::new(),
+            active_playlist: None,
+            naming_playlist: None,
+            pending_playlist_action: None,
             repeat_mode: RepeatMode::Off,
             shuffle_mode: ShuffleMode::Off,
             show_help: false,
@@ -167,13 +188,21 @@ impl App {
                 self.view = View::Songs(artist.clone(), entry.clone());
                 self.selected = 0;
             }
-            View::Songs(_, _) => {}
+            View::Songs(_, _) | View::Playlists | View::PlaylistSongs(_) => {}
         }
     }
 
     fn back(&mut self) {
         match &self.view {
             View::Artists => {}
+            View::Playlists => {
+                self.view = View::Artists;
+                self.selected = 0;
+            }
+            View::PlaylistSongs(_) => {
+                self.view = View::Playlists;
+                self.selected = 0;
+            }
             View::Albums(_) => {
                 self.view = View::Artists;
                 self.selected = self.artist_selected;
@@ -267,6 +296,22 @@ fn advance(app: &mut App, audio: &mut player::AudioPlayer, music: &MusicLibrary<
         }
     }
 
+    // Manual queue wins; playlist sequence comes next, then normal album/shuffle.
+    while let Some(next) = app.playlist_up_next.pop_front() {
+        if let Some(song) = queued_song(music, &next) {
+            start_track(app, audio, song, next.index);
+            return;
+        }
+    }
+
+    if app.playlist_playing {
+        app.playlist_playing = false;
+        app.playing_track = None;
+        app.now_playing = None;
+        app.status = "Playlist finished".into();
+        return;
+    }
+
     let Some(playing) = app.playing_track.take() else {
         app.now_playing = None;
         app.status = "Queue finished".into();
@@ -341,6 +386,108 @@ fn advance(app: &mut App, audio: &mut player::AudioPlayer, music: &MusicLibrary<
     }
 }
 
+// M3U8 playlists are portable UTF-8 files with absolute music paths.
+fn playlist_directory() -> PathBuf {
+    PathBuf::from(std::env::var_os("HOME").unwrap_or_default())
+        .join("Music")
+        .join("Playlists")
+}
+
+fn valid_playlist_name(name: &str) -> bool {
+    !name.is_empty()
+        && name != "."
+        && name != ".."
+        && !name.starts_with('.')
+        && !name.contains(['/', '\\', '\n', '\r'])
+        && !name.chars().any(|c| c.is_control())
+}
+
+fn read_playlists(dir: &Path) -> io::Result<BTreeMap<String, Vec<PathBuf>>> {
+    let mut playlists = BTreeMap::new();
+    fs::create_dir_all(dir)?;
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if !path.is_file() || path.extension().and_then(|x| x.to_str()) != Some("m3u8") {
+            continue;
+        }
+        let Some(name) = path.file_stem().and_then(|x| x.to_str()) else {
+            continue;
+        };
+        let contents = fs::read_to_string(&path)?;
+        let tracks = contents
+            .lines()
+            .filter(|line| !line.is_empty() && !line.starts_with('#'))
+            .map(|line| {
+                let p = PathBuf::from(line);
+                if p.is_absolute() { p } else { dir.join(p) }
+            })
+            .collect();
+        playlists.insert(name.to_owned(), tracks);
+    }
+    Ok(playlists)
+}
+
+fn save_playlist(dir: &Path, name: &str, paths: &[PathBuf]) -> io::Result<()> {
+    if !valid_playlist_name(name) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Invalid playlist name",
+        ));
+    }
+    fs::create_dir_all(dir)?;
+    let mut contents = String::from("#EXTM3U\n");
+    for path in paths {
+        contents.push_str(&path.to_string_lossy());
+        contents.push('\n');
+    }
+    fs::write(dir.join(format!("{name}.m3u8")), contents)
+}
+
+fn resolve_path(music: &MusicLibrary<'_>, path: &Path) -> Option<PlayingTrack> {
+    for (artist, albums) in music {
+        for (album, songs) in albums {
+            for (index, song) in songs.iter().enumerate() {
+                if song.path.as_path() == path {
+                    return Some(PlayingTrack {
+                        artist: artist.clone(),
+                        album: album.clone(),
+                        index,
+                    });
+                }
+            }
+        }
+    }
+    None
+}
+
+fn play_playlist_from(
+    app: &mut App,
+    audio: &mut player::AudioPlayer,
+    music: &MusicLibrary<'_>,
+    name: &str,
+    from: usize,
+) {
+    let Some(paths) = app.playlists.get(name) else {
+        return;
+    };
+    let tracks: Vec<PlayingTrack> = paths
+        .iter()
+        .skip(from)
+        .filter_map(|path| resolve_path(music, path))
+        .collect();
+    let mut iter = tracks.into_iter();
+    let Some(first) = iter.next() else {
+        app.status = "Playlist has no available tracks".into();
+        return;
+    };
+    app.playlist_up_next = iter.collect();
+    app.playlist_playing = true;
+    if let Some(song) = queued_song(music, &first) {
+        start_track(app, audio, song, first.index);
+    }
+}
+
 fn run(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     songs: &[library::Song],
@@ -369,6 +516,11 @@ fn run(
     }
 
     let mut app = App::new();
+    let playlist_dir = playlist_directory();
+    match read_playlists(&playlist_dir) {
+        Ok(saved) => app.playlists = saved,
+        Err(err) => app.status = format!("Playlist load error: {err}"),
+    }
 
     let mut audio =
         player::AudioPlayer::new().map_err(|error| io::Error::other(error.to_string()))?;
@@ -391,6 +543,21 @@ fn run(
                 music[artist][album]
                     .iter()
                     .map(|song| format!("{:02}. {}", song.track.unwrap_or(0), song.title))
+                    .collect(),
+            ),
+            View::Playlists => ("PLAYLISTS".into(), app.playlists.keys().cloned().collect()),
+            View::PlaylistSongs(name) => (
+                format!("PLAYLIST / {name}"),
+                app.playlists
+                    .get(name)
+                    .into_iter()
+                    .flatten()
+                    .map(|path| {
+                        resolve_path(&music, path)
+                            .and_then(|track| queued_song(&music, &track))
+                            .map(|song| format!("{} — {}", song.artist, song.title))
+                            .unwrap_or_else(|| format!("[Missing] {}", path.display()))
+                    })
                     .collect(),
             ),
         };
@@ -513,6 +680,15 @@ fn run(
                     ));
                 }
             }
+            if let Some(name) = &app.active_playlist {
+                info.push_str(&format!("\nACTIVE PLAYLIST: {name}"));
+            }
+            if !app.playlist_up_next.is_empty() {
+                info.push_str(&format!(
+                    "\nPLAYLIST UP NEXT: {}",
+                    app.playlist_up_next.len()
+                ));
+            }
             if app.queue.len() > 3 {
                 info.push_str(&format!("\n... and {} more", app.queue.len() - 3));
             }
@@ -572,13 +748,66 @@ fn run(
                 .block(Block::default().borders(Borders::ALL));
             frame.render_widget(footer, sections[2]);
 
+            if let Some(name) = &app.naming_playlist {
+                let area = frame.area();
+                let popup = ratatui::layout::Rect {
+                    x: area.x + area.width.saturating_sub(58) / 2,
+                    y: area.y + area.height.saturating_sub(5) / 2,
+                    width: area.width.min(58),
+                    height: area.height.min(5),
+                };
+                frame.render_widget(Clear, popup);
+                let prompt = Paragraph::new(format!(
+                    "Playlist name: {name}_\nEnter to save / Esc to cancel"
+                ))
+                .block(
+                    Block::default()
+                        .title(" NEW PLAYLIST ")
+                        .borders(Borders::ALL),
+                )
+                .style(Style::default().fg(CYAN));
+                frame.render_widget(prompt, popup);
+            }
+
+            if let Some((name, action)) = &app.pending_playlist_action {
+                let area = frame.area();
+                let popup = ratatui::layout::Rect {
+                    x: area.x + area.width.saturating_sub(64) / 2,
+                    y: area.y + area.height.saturating_sub(5) / 2,
+                    width: area.width.min(64),
+                    height: area.height.min(5),
+                };
+                frame.render_widget(Clear, popup);
+                let warning = match action {
+                    PlaylistAction::Clear => {
+                        format!("Empty playlist '{name}'?\nY: Confirm  N/Esc: Cancel")
+                    }
+                    PlaylistAction::Delete => format!(
+                        "Delete playlist '{name}'? (Music is safe)\nY: Confirm  N/Esc: Cancel"
+                    ),
+                    PlaylistAction::RemoveSong(index) => format!(
+                        "Remove song {} from playlist '{name}'?\nY: Confirm  N/Esc: Cancel",
+                        index + 1
+                    ),
+                };
+                let prompt = Paragraph::new(warning)
+                    .wrap(ratatui::widgets::Wrap { trim: true })
+                    .block(
+                        Block::default()
+                            .title(" CONFIRM PLAYLIST ACTION ")
+                            .borders(Borders::ALL),
+                    )
+                    .style(Style::default().fg(CYAN));
+                frame.render_widget(prompt, popup);
+            }
+
             if app.show_help {
                 let area = frame.area();
                 let popup = ratatui::layout::Rect {
                     x: area.x + area.width.saturating_sub(66) / 2,
-                    y: area.y + area.height.saturating_sub(20) / 2,
+                    y: area.y + area.height.saturating_sub(24) / 2,
                     width: area.width.min(66),
-                    height: area.height.min(20),
+                    height: area.height.min(26),
                 };
                 frame.render_widget(Clear, popup);
                 let help = Paragraph::new(concat!(
@@ -593,6 +822,13 @@ fn run(
                     "T             Repeat: Off / Song / Album\n",
                     "U             Shuffle: Off / Album / Library\n",
                     "X             Play random song from library\n",
+                    "P             Toggle playlists / library\n",
+                    "M             Create and name a playlist\n",
+                    "G             Add selected song to active playlist\n",
+                    "E             Empty selected playlist (confirm)\n",
+                    "D             Delete selected playlist (confirm)\n",
+                    "Z             Remove highlighted playlist song\n",
+                    "Enter         Open / play playlist tracks\n",
                     "S             Stop playback\n",
                     "Q             Quit HEVY\n",
                     "? or Esc      Close help",
@@ -616,6 +852,106 @@ fn run(
 
         if let Event::Key(key) = event::read()? {
             if key.kind != KeyEventKind::Press {
+                continue;
+            }
+
+            if let Some((name, action)) = app.pending_playlist_action.take() {
+                if matches!(key.code, KeyCode::Char('y') | KeyCode::Char('Y')) {
+                    match action {
+                        PlaylistAction::Clear => match save_playlist(&playlist_dir, &name, &[]) {
+                            Ok(()) => {
+                                app.playlists.insert(name.clone(), Vec::new());
+                                if matches!(&app.view, View::PlaylistSongs(current) if current == &name)
+                                {
+                                    app.selected = 0;
+                                }
+                                app.status = format!("Emptied playlist: {name}");
+                            }
+                            Err(err) => app.status = format!("Playlist clear error: {err}"),
+                        },
+                        PlaylistAction::RemoveSong(index) => {
+                            if let Some(paths) = app.playlists.get(&name) {
+                                if index < paths.len() {
+                                    let mut updated = paths.clone();
+                                    updated.remove(index);
+                                    match save_playlist(&playlist_dir, &name, &updated) {
+                                        Ok(()) => {
+                                            let remaining = updated.len();
+                                            app.playlists.insert(name.clone(), updated);
+                                            app.selected = if remaining == 0 {
+                                                0
+                                            } else {
+                                                app.selected.min(remaining - 1)
+                                            };
+                                            app.status = format!(
+                                                "Removed song from {name} (music untouched)"
+                                            );
+                                        }
+                                        Err(err) => {
+                                            app.status = format!("Playlist save error: {err}")
+                                        }
+                                    }
+                                } else {
+                                    app.status = "Song no longer exists in playlist".into();
+                                }
+                            }
+                        }
+                        PlaylistAction::Delete => {
+                            match fs::remove_file(playlist_dir.join(format!("{name}.m3u8"))) {
+                                Ok(()) => {
+                                    app.playlists.remove(&name);
+                                    if app.active_playlist.as_deref() == Some(name.as_str()) {
+                                        app.active_playlist = None;
+                                    }
+                                    if matches!(&app.view, View::PlaylistSongs(current) if current == &name)
+                                    {
+                                        app.view = View::Playlists;
+                                    }
+                                    app.selected = 0;
+                                    app.status =
+                                        format!("Deleted playlist: {name} (music untouched)");
+                                }
+                                Err(err) => app.status = format!("Playlist delete error: {err}"),
+                            }
+                        }
+                    }
+                } else {
+                    app.status = "Playlist action canceled".into();
+                }
+                continue;
+            }
+
+            if let Some(name) = &mut app.naming_playlist {
+                match key.code {
+                    KeyCode::Esc => app.naming_playlist = None,
+                    KeyCode::Backspace => {
+                        name.pop();
+                    }
+                    KeyCode::Char(ch) if !ch.is_control() => {
+                        name.push(ch);
+                    }
+                    KeyCode::Enter => {
+                        let proposed = name.trim().to_owned();
+                        app.naming_playlist = None;
+                        if !valid_playlist_name(&proposed) {
+                            app.status = "Invalid playlist name".into();
+                        } else if app.playlists.contains_key(&proposed)
+                            || playlist_dir.join(format!("{proposed}.m3u8")).exists()
+                        {
+                            app.status = "Playlist already exists".into();
+                        } else {
+                            match save_playlist(&playlist_dir, &proposed, &[]) {
+                                Ok(()) => {
+                                    app.playlists.insert(proposed.clone(), Vec::new());
+                                    app.active_playlist = Some(proposed.clone());
+                                    app.status = format!("Created playlist: {proposed}");
+                                }
+                                Err(err) => app.status = format!("Save error: {err}"),
+                            }
+                        }
+                    }
+                    _ => {}
+                }
                 continue;
             }
 
@@ -647,9 +983,23 @@ fn run(
                 }
 
                 KeyCode::Enter => match &app.view {
+                    View::Playlists => {
+                        if let Some(name) = entries.get(app.selected) {
+                            app.active_playlist = Some(name.clone());
+                            app.view = View::PlaylistSongs(name.clone());
+                            app.selected = 0;
+                        }
+                    }
+                    View::PlaylistSongs(name) => {
+                        let name = name.clone();
+                        let selected = app.selected;
+                        play_playlist_from(&mut app, &mut audio, &music, &name, selected);
+                    }
                     View::Songs(artist, album) => {
                         let index = app.selected;
                         if let Some(song) = music[artist][album].get(index) {
+                            app.playlist_up_next.clear();
+                            app.playlist_playing = false;
                             start_track(&mut app, &mut audio, song, index);
                         }
                     }
@@ -679,6 +1029,85 @@ fn run(
                 }
 
                 // Add the selected song to the end of the queue.
+                KeyCode::Char('p') => {
+                    if matches!(app.view, View::Playlists | View::PlaylistSongs(_)) {
+                        app.view = View::Artists;
+                    } else {
+                        app.view = View::Playlists;
+                    }
+                    app.selected = 0;
+                }
+
+                KeyCode::Char('m') => {
+                    app.naming_playlist = Some(String::new());
+                }
+
+                // E empties the saved playlist, D deletes its .m3u8 file.
+                // Both actions require confirmation; neither deletes music files.
+                KeyCode::Char('e') | KeyCode::Char('d') => {
+                    let target = match &app.view {
+                        View::PlaylistSongs(name) => Some(name.clone()),
+                        View::Playlists => entries.get(app.selected).cloned(),
+                        _ => None,
+                    };
+                    if let Some(name) = target.filter(|n| app.playlists.contains_key(n)) {
+                        let action = if key.code == KeyCode::Char('e') {
+                            PlaylistAction::Clear
+                        } else {
+                            PlaylistAction::Delete
+                        };
+                        app.pending_playlist_action = Some((name, action));
+                    } else {
+                        app.status = "Select a playlist first (press P)".into();
+                    }
+                }
+
+                // Remove only the highlighted entry from a saved playlist.
+                // This does not delete the audio file or change the temporary queue.
+                KeyCode::Char('z') => {
+                    if let View::PlaylistSongs(name) = &app.view {
+                        if app
+                            .playlists
+                            .get(name)
+                            .is_some_and(|paths| app.selected < paths.len())
+                        {
+                            app.pending_playlist_action =
+                                Some((name.clone(), PlaylistAction::RemoveSong(app.selected)));
+                        } else {
+                            app.status = "No playlist song selected".into();
+                        }
+                    } else {
+                        app.status = "Open a playlist and highlight a song first".into();
+                    }
+                }
+
+                KeyCode::Char('g') => {
+                    if let (Some(name), View::Songs(artist, album)) =
+                        (&app.active_playlist, &app.view)
+                    {
+                        if let Some(song) = music
+                            .get(artist)
+                            .and_then(|albums| albums.get(album))
+                            .and_then(|songs| songs.get(app.selected))
+                        {
+                            let name = name.clone();
+                            if let Some(paths) = app.playlists.get(&name) {
+                                let mut updated = paths.clone();
+                                updated.push(song.path.clone());
+                                match save_playlist(&playlist_dir, &name, &updated) {
+                                    Ok(()) => {
+                                        app.playlists.insert(name.clone(), updated);
+                                        app.status = format!("Added to {name}");
+                                    }
+                                    Err(err) => app.status = format!("Save error: {err}"),
+                                }
+                            }
+                        }
+                    } else {
+                        app.status = "Open a song and select/create a playlist first".into();
+                    }
+                }
+
                 KeyCode::Char('a') => {
                     if let View::Songs(artist, album) = &app.view {
                         if music
@@ -699,7 +1128,10 @@ fn run(
 
                 // Skip to the next queued song, or continue album playback.
                 KeyCode::Char('n') => {
-                    if app.playing_track.is_some() || !app.queue.is_empty() {
+                    if app.playing_track.is_some()
+                        || !app.queue.is_empty()
+                        || !app.playlist_up_next.is_empty()
+                    {
                         advance(&mut app, &mut audio, &music);
                     }
                 }
@@ -737,6 +1169,8 @@ fn run(
                     } else {
                         let selected = &all_tracks[random_index(all_tracks.len())];
                         if let Some(song) = queued_song(&music, selected) {
+                            app.playlist_up_next.clear();
+                            app.playlist_playing = false;
                             start_track(&mut app, &mut audio, song, selected.index);
                         }
                     }
@@ -747,6 +1181,8 @@ fn run(
                     app.status = "Stopped".into();
                     app.now_playing = None;
                     app.playing_track = None;
+                    app.playlist_up_next.clear();
+                    app.playlist_playing = false;
                 }
 
                 _ => {}
