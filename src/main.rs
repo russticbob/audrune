@@ -32,12 +32,20 @@ enum View {
 
 type MusicLibrary<'a> = BTreeMap<String, BTreeMap<String, Vec<&'a library::Song>>>;
 
+// Playback state is independent of the currently browsed album.
+struct PlayingTrack {
+    artist: String,
+    album: String,
+    index: usize,
+}
+
 struct App {
     view: View,
     selected: usize,
     artist_selected: usize,
     album_selected: usize,
     now_playing: Option<String>,
+    playing_track: Option<PlayingTrack>,
     status: String,
 }
 
@@ -49,6 +57,7 @@ impl App {
             artist_selected: 0,
             album_selected: 0,
             now_playing: None,
+            playing_track: None,
             status: "Ready to play".into(),
         }
     }
@@ -139,6 +148,27 @@ fn main() -> io::Result<()> {
     result
 }
 
+// Start a track and remember where it belongs in its album.
+fn start_track(app: &mut App, audio: &mut player::AudioPlayer, song: &library::Song, index: usize) {
+    match audio.play(&song.path) {
+        Ok(()) => {
+            audio.set_duration(song.duration);
+            app.now_playing = Some(format!("{}\n{}", song.artist, song.title));
+            app.playing_track = Some(PlayingTrack {
+                artist: song.artist.clone(),
+                album: song.album.clone(),
+                index,
+            });
+            app.status = "Playing".into();
+        }
+        Err(error) => {
+            app.status = format!("Playback error: {error}");
+            app.now_playing = None;
+            app.playing_track = None;
+        }
+    }
+}
+
 fn run(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     songs: &[library::Song],
@@ -172,6 +202,25 @@ fn run(
         player::AudioPlayer::new().map_err(|error| io::Error::other(error.to_string()))?;
 
     loop {
+        // Advance only when the current track has actually finished.
+        // This runs on every UI tick, even when no key has been pressed.
+        if app.playing_track.is_some() && audio.is_finished() {
+            let playing = app.playing_track.take().expect("checked above");
+            let next_index = playing.index + 1;
+            let next_song = music
+                .get(&playing.artist)
+                .and_then(|albums| albums.get(&playing.album))
+                .and_then(|tracks| tracks.get(next_index))
+                .copied();
+
+            if let Some(song) = next_song {
+                start_track(&mut app, &mut audio, song, next_index);
+            } else {
+                app.now_playing = None;
+                app.status = "Album finished".into();
+            }
+        }
+
         // Build the current library view.
         let (heading, entries): (String, Vec<String>) = match &app.view {
             View::Artists => ("ARTISTS".into(), music.keys().cloned().collect()),
@@ -315,7 +364,8 @@ fn run(
                  Space: Pause/Resume\n\
                  F: Forward 10s\n\
                  R: Rewind 10s\n\
-                 S: Stop",
+                 S: Stop\n\
+                 Auto-next: On",
                 music.len(),
                 album_count,
                 songs.len(),
@@ -402,21 +452,9 @@ fn run(
 
                 KeyCode::Enter => match &app.view {
                     View::Songs(artist, album) => {
-                        if let Some(song) = music[artist][album].get(app.selected) {
-                            match audio.play(&song.path) {
-                                Ok(()) => {
-                                    // Use Lofty's duration metadata.
-                                    audio.set_duration(song.duration);
-
-                                    app.now_playing =
-                                        Some(format!("{}\n{}", song.artist, song.title));
-
-                                    app.status = "Playing".into();
-                                }
-                                Err(error) => {
-                                    app.status = format!("Playback error: {error}");
-                                }
-                            }
+                        let index = app.selected;
+                        if let Some(song) = music[artist][album].get(index) {
+                            start_track(&mut app, &mut audio, song, index);
                         }
                     }
                     _ => app.enter(&entries),
@@ -448,6 +486,7 @@ fn run(
                     audio.stop();
                     app.status = "Stopped".into();
                     app.now_playing = None;
+                    app.playing_track = None;
                 }
 
                 _ => {}
