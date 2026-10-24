@@ -3,3 +3,7 @@
 # Local source backups
 *.backup
 *.pre-*
+
+# Local source backups
+*.backup
+*.pre-*
