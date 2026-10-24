@@ -32,6 +32,31 @@ enum View {
 
 type MusicLibrary<'a> = BTreeMap<String, BTreeMap<String, Vec<&'a library::Song>>>;
 
+#[derive(Clone, Copy)]
+enum RepeatMode {
+    Off,
+    Song,
+    Album,
+}
+
+impl RepeatMode {
+    fn next(self) -> Self {
+        match self {
+            Self::Off => Self::Song,
+            Self::Song => Self::Album,
+            Self::Album => Self::Off,
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Off => "Off",
+            Self::Song => "Song",
+            Self::Album => "Album",
+        }
+    }
+}
+
 // Playback state is independent of the currently browsed album.
 struct PlayingTrack {
     artist: String,
@@ -46,6 +71,7 @@ struct App {
     album_selected: usize,
     now_playing: Option<String>,
     playing_track: Option<PlayingTrack>,
+    repeat_mode: RepeatMode,
     status: String,
 }
 
@@ -58,6 +84,7 @@ impl App {
             album_selected: 0,
             now_playing: None,
             playing_track: None,
+            repeat_mode: RepeatMode::Off,
             status: "Ready to play".into(),
         }
     }
@@ -202,19 +229,30 @@ fn run(
         player::AudioPlayer::new().map_err(|error| io::Error::other(error.to_string()))?;
 
     loop {
-        // Advance only when the current track has actually finished.
-        // This runs on every UI tick, even when no key has been pressed.
+        // Handle track completion independently of the library browser.
         if app.playing_track.is_some() && audio.is_finished() {
             let playing = app.playing_track.take().expect("checked above");
-            let next_index = playing.index + 1;
-            let next_song = music
+            let tracks = music
                 .get(&playing.artist)
-                .and_then(|albums| albums.get(&playing.album))
-                .and_then(|tracks| tracks.get(next_index))
-                .copied();
+                .and_then(|albums| albums.get(&playing.album));
 
-            if let Some(song) = next_song {
-                start_track(&mut app, &mut audio, song, next_index);
+            let next_index = match app.repeat_mode {
+                RepeatMode::Song => Some(playing.index),
+                RepeatMode::Album => tracks.and_then(|tracks| {
+                    if tracks.is_empty() {
+                        None
+                    } else {
+                        Some((playing.index + 1) % tracks.len())
+                    }
+                }),
+                RepeatMode::Off => Some(playing.index + 1),
+            };
+
+            let next_song =
+                next_index.and_then(|index| tracks.and_then(|tracks| tracks.get(index)).copied());
+
+            if let (Some(index), Some(song)) = (next_index, next_song) {
+                start_track(&mut app, &mut audio, song, index);
             } else {
                 app.now_playing = None;
                 app.status = "Album finished".into();
@@ -285,14 +323,19 @@ fn run(
 
             frame.render_widget(header, sections[0]);
 
-            // Main columns.
-            let columns = Layout::default()
-                .direction(Direction::Horizontal)
-                .constraints([
-                    Constraint::Percentage(65),
-                    Constraint::Percentage(35),
-                ])
-                .split(sections[1]);
+            // Stack panels on narrow terminals; keep side-by-side on wide ones.
+            let stacked = sections[1].width < 110;
+            let columns = if stacked {
+                Layout::default()
+                    .direction(Direction::Vertical)
+                    .constraints([Constraint::Percentage(35), Constraint::Percentage(65)])
+                    .split(sections[1])
+            } else {
+                Layout::default()
+                    .direction(Direction::Horizontal)
+                    .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
+                    .split(sections[1])
+            };
 
             // Library list.
             let items: Vec<ListItem> = entries
@@ -353,27 +396,26 @@ fn run(
                 ])
                 .split(columns[1]);
 
-            let info = format!(
-                "Artists: {}\n\
-                 Albums: {}\n\
-                 Tracks: {}\n\n\
-                 NOW PLAYING\n\
-                 {}\n\n\
-                 Status: {}\n\n\
-                 Enter: Play\n\
-                 Space: Pause/Resume\n\
-                 F: Forward 10s\n\
-                 R: Rewind 10s\n\
-                 S: Stop\n\
-                 Auto-next: On",
-                music.len(),
-                album_count,
-                songs.len(),
-                playing,
+            // Prioritize the title when vertical space is limited. Wrapped titles
+            // need room; statistics are secondary and can disappear on short screens.
+            let mut info = format!(
+                "Repeat: {}\nStatus: {}\n\nNOW PLAYING\n{}",
+                app.repeat_mode.label(),
                 playback_status,
+                playing,
             );
 
+            if player_sections[0].height >= 15 {
+                info.push_str(&format!(
+                    "\n\nArtists: {}\nAlbums: {}\nTracks: {}",
+                    music.len(),
+                    album_count,
+                    songs.len(),
+                ));
+            }
+
             let details = Paragraph::new(info)
+                .wrap(ratatui::widgets::Wrap { trim: true })
                 .style(Style::default().fg(TEXT))
                 .block(
                     Block::default()
@@ -411,7 +453,7 @@ fn run(
 
             // Footer.
             let footer = Paragraph::new(
-                " ↑↓ Navigate  → Open  ← Back  Enter Play  Space Pause  F +10s  R -10s  S Stop  Q Quit ",
+                " ↑↓ Navigate  → Open  ← Back  Enter Play  Space Pause  F +10s  R -10s  T Repeat  S Stop  Q Quit ",
             )
             .style(Style::default().fg(MUTED))
             .block(
@@ -480,6 +522,10 @@ fn run(
                             app.status = format!("Seek error: {error}");
                         }
                     }
+                }
+
+                KeyCode::Char('t') => {
+                    app.repeat_mode = app.repeat_mode.next();
                 }
 
                 KeyCode::Char('s') => {
