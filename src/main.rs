@@ -1,7 +1,12 @@
 mod library;
 mod player;
 
-use std::{collections::BTreeMap, io, path::PathBuf, time::Duration};
+use std::{
+    collections::{BTreeMap, VecDeque},
+    io,
+    path::PathBuf,
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
 
 use crossterm::{
     event::{self, Event, KeyCode, KeyEventKind},
@@ -14,7 +19,7 @@ use ratatui::{
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout},
     style::{Color, Modifier, Style},
-    widgets::{Block, Borders, Gauge, List, ListItem, ListState, Paragraph},
+    widgets::{Block, Borders, Clear, Gauge, List, ListItem, ListState, Paragraph},
 };
 
 // Tokyo Night color palette.
@@ -57,7 +62,48 @@ impl RepeatMode {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ShuffleMode {
+    Off,
+    Album,
+    Library,
+}
+
+impl ShuffleMode {
+    fn next(self) -> Self {
+        match self {
+            Self::Off => Self::Album,
+            Self::Album => Self::Library,
+            Self::Library => Self::Off,
+        }
+    }
+    fn label(self) -> &'static str {
+        match self {
+            Self::Off => "Off",
+            Self::Album => "Album",
+            Self::Library => "Library",
+        }
+    }
+}
+
+// A tiny PRNG for track selection; no new Cargo dependencies.
+fn random_index(limit: usize) -> usize {
+    if limit <= 1 {
+        return 0;
+    }
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos() as u64;
+    let mut x = nanos ^ (nanos >> 32);
+    x ^= x << 13;
+    x ^= x >> 7;
+    x ^= x << 17;
+    (x as usize) % limit
+}
+
 // Playback state is independent of the currently browsed album.
+#[derive(Clone)]
 struct PlayingTrack {
     artist: String,
     album: String,
@@ -71,7 +117,10 @@ struct App {
     album_selected: usize,
     now_playing: Option<String>,
     playing_track: Option<PlayingTrack>,
+    queue: VecDeque<PlayingTrack>,
     repeat_mode: RepeatMode,
+    shuffle_mode: ShuffleMode,
+    show_help: bool,
     status: String,
 }
 
@@ -84,7 +133,10 @@ impl App {
             album_selected: 0,
             now_playing: None,
             playing_track: None,
+            queue: VecDeque::new(),
             repeat_mode: RepeatMode::Off,
+            shuffle_mode: ShuffleMode::Off,
+            show_help: false,
             status: "Ready to play".into(),
         }
     }
@@ -196,6 +248,99 @@ fn start_track(app: &mut App, audio: &mut player::AudioPlayer, song: &library::S
     }
 }
 
+// Resolve a queued entry against the already-sorted library.
+fn queued_song<'a>(music: &'a MusicLibrary<'_>, entry: &PlayingTrack) -> Option<&'a library::Song> {
+    music
+        .get(&entry.artist)?
+        .get(&entry.album)?
+        .get(entry.index)
+        .copied()
+}
+
+// Queue takes priority over album auto-next. Repeat Song applies only when
+// the queue is empty, so manually queued songs are never starved.
+fn advance(app: &mut App, audio: &mut player::AudioPlayer, music: &MusicLibrary<'_>) {
+    while let Some(next) = app.queue.pop_front() {
+        if let Some(song) = queued_song(music, &next) {
+            start_track(app, audio, song, next.index);
+            return;
+        }
+    }
+
+    let Some(playing) = app.playing_track.take() else {
+        app.now_playing = None;
+        app.status = "Queue finished".into();
+        return;
+    };
+    let Some(tracks) = music
+        .get(&playing.artist)
+        .and_then(|a| a.get(&playing.album))
+    else {
+        app.now_playing = None;
+        app.status = "Album unavailable".into();
+        return;
+    };
+    // Explicitly queued tracks always win. Repeat Song wins over shuffle.
+    if !matches!(app.repeat_mode, RepeatMode::Song) {
+        let shuffled = match app.shuffle_mode {
+            ShuffleMode::Off => None,
+            ShuffleMode::Album => {
+                if tracks.len() < 2 {
+                    None
+                } else {
+                    let offset = 1 + random_index(tracks.len() - 1);
+                    Some(PlayingTrack {
+                        artist: playing.artist.clone(),
+                        album: playing.album.clone(),
+                        index: (playing.index + offset) % tracks.len(),
+                    })
+                }
+            }
+            ShuffleMode::Library => {
+                let all: Vec<PlayingTrack> = music
+                    .iter()
+                    .flat_map(|(artist, albums)| {
+                        albums.iter().flat_map(move |(album, tracks)| {
+                            (0..tracks.len()).map(move |index| PlayingTrack {
+                                artist: artist.clone(),
+                                album: album.clone(),
+                                index,
+                            })
+                        })
+                    })
+                    .filter(|candidate| {
+                        candidate.artist != playing.artist
+                            || candidate.album != playing.album
+                            || candidate.index != playing.index
+                    })
+                    .collect();
+                if all.is_empty() {
+                    None
+                } else {
+                    Some(all[random_index(all.len())].clone())
+                }
+            }
+        };
+        if let Some(next) = shuffled {
+            if let Some(song) = queued_song(music, &next) {
+                start_track(app, audio, song, next.index);
+                return;
+            }
+        }
+    }
+    let next_index = match app.repeat_mode {
+        RepeatMode::Song => Some(playing.index),
+        RepeatMode::Album if !tracks.is_empty() => Some((playing.index + 1) % tracks.len()),
+        _ => Some(playing.index + 1),
+    };
+    if let Some((index, song)) = next_index.and_then(|i| tracks.get(i).map(|song| (i, *song))) {
+        start_track(app, audio, song, index);
+    } else {
+        app.now_playing = None;
+        app.status = "Album finished".into();
+    }
+}
+
 fn run(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     songs: &[library::Song],
@@ -229,34 +374,9 @@ fn run(
         player::AudioPlayer::new().map_err(|error| io::Error::other(error.to_string()))?;
 
     loop {
-        // Handle track completion independently of the library browser.
+        // Advance automatically when the decoder finishes.
         if app.playing_track.is_some() && audio.is_finished() {
-            let playing = app.playing_track.take().expect("checked above");
-            let tracks = music
-                .get(&playing.artist)
-                .and_then(|albums| albums.get(&playing.album));
-
-            let next_index = match app.repeat_mode {
-                RepeatMode::Song => Some(playing.index),
-                RepeatMode::Album => tracks.and_then(|tracks| {
-                    if tracks.is_empty() {
-                        None
-                    } else {
-                        Some((playing.index + 1) % tracks.len())
-                    }
-                }),
-                RepeatMode::Off => Some(playing.index + 1),
-            };
-
-            let next_song =
-                next_index.and_then(|index| tracks.and_then(|tracks| tracks.get(index)).copied());
-
-            if let (Some(index), Some(song)) = (next_index, next_song) {
-                start_track(&mut app, &mut audio, song, index);
-            } else {
-                app.now_playing = None;
-                app.status = "Album finished".into();
-            }
+            advance(&mut app, &mut audio, &music);
         }
 
         // Build the current library view.
@@ -310,11 +430,7 @@ fn run(
 
             // Header.
             let header = Paragraph::new("◆ HEVY / LOCAL MUSIC")
-                .style(
-                    Style::default()
-                        .fg(CYAN)
-                        .add_modifier(Modifier::BOLD),
-                )
+                .style(Style::default().fg(CYAN).add_modifier(Modifier::BOLD))
                 .block(
                     Block::default()
                         .borders(Borders::ALL)
@@ -342,22 +458,15 @@ fn run(
                 .iter()
                 .enumerate()
                 .map(|(i, name)| {
-                    let prefix = if i == app.selected {
-                        "▸ "
-                    } else {
-                        "  "
-                    };
+                    let prefix = if i == app.selected { "▸ " } else { "  " };
 
                     let style = if i == app.selected {
-                        Style::default()
-                            .fg(CYAN)
-                            .add_modifier(Modifier::BOLD)
+                        Style::default().fg(CYAN).add_modifier(Modifier::BOLD)
                     } else {
                         Style::default().fg(TEXT)
                     };
 
-                    ListItem::new(format!("{prefix}{name}"))
-                        .style(style)
+                    ListItem::new(format!("{prefix}{name}")).style(style)
                 })
                 .collect();
 
@@ -368,44 +477,47 @@ fn run(
                     .border_style(Style::default().fg(PURPLE)),
             );
 
-            let mut list_state = ListState::default()
-                .with_selected(
-                    (!entries.is_empty()).then_some(app.selected),
-                );
+            let mut list_state =
+                ListState::default().with_selected((!entries.is_empty()).then_some(app.selected));
 
-            frame.render_stateful_widget(
-                list,
-                columns[0],
-                &mut list_state,
-            );
+            frame.render_stateful_widget(list, columns[0], &mut list_state);
 
             // Player information.
-            let album_count: usize =
-                music.values().map(|albums| albums.len()).sum();
+            let album_count: usize = music.values().map(|albums| albums.len()).sum();
 
-            let playing = app
-                .now_playing
-                .as_deref()
-                .unwrap_or("Nothing playing");
+            let playing = app.now_playing.as_deref().unwrap_or("Nothing playing");
 
             let player_sections = Layout::default()
                 .direction(Direction::Vertical)
-                .constraints([
-                    Constraint::Min(8),
-                    Constraint::Length(3),
-                ])
+                .constraints([Constraint::Min(8), Constraint::Length(3)])
                 .split(columns[1]);
 
             // Prioritize the title when vertical space is limited. Wrapped titles
             // need room; statistics are secondary and can disappear on short screens.
             let mut info = format!(
-                "Repeat: {}\nStatus: {}\n\nNOW PLAYING\n{}",
+                "Repeat: {}  |  Shuffle: {}\nStatus: {}\n\nNOW PLAYING\n{}",
                 app.repeat_mode.label(),
+                app.shuffle_mode.label(),
                 playback_status,
                 playing,
             );
 
-            if player_sections[0].height >= 15 {
+            info.push_str(&format!("\n\nQUEUE: {} track(s)", app.queue.len()));
+            for (index, queued) in app.queue.iter().take(3).enumerate() {
+                if let Some(song) = queued_song(&music, queued) {
+                    info.push_str(&format!(
+                        "\n{}. {} — {}",
+                        index + 1,
+                        song.artist,
+                        song.title
+                    ));
+                }
+            }
+            if app.queue.len() > 3 {
+                info.push_str(&format!("\n... and {} more", app.queue.len() - 3));
+            }
+
+            if player_sections[0].height >= 22 {
                 info.push_str(&format!(
                     "\n\nArtists: {}\nAlbums: {}\nTracks: {}",
                     music.len(),
@@ -430,37 +542,71 @@ fn run(
             let progress_bar = Gauge::default()
                 .block(
                     Block::default()
-                        .title(format!(
-                            " {} / {} ",
-                            elapsed_label,
-                            duration_label
-                        ))
+                        .title(format!(" {} / {} ", elapsed_label, duration_label))
                         .borders(Borders::ALL)
                         .border_style(Style::default().fg(PURPLE)),
                 )
-                .gauge_style(
-                    Style::default()
-                        .fg(CYAN)
-                        .bg(Color::Rgb(41, 46, 66)),
-                )
+                .gauge_style(Style::default().fg(CYAN).bg(Color::Rgb(41, 46, 66)))
                 .ratio(progress)
                 .label("");
 
-            frame.render_widget(
-                progress_bar,
-                player_sections[1],
-            );
+            frame.render_widget(progress_bar, player_sections[1]);
 
-            // Footer.
-            let footer = Paragraph::new(
-                " ↑↓ Navigate  → Open  ← Back  Enter Play  Space Pause  F +10s  R -10s  T Repeat  S Stop  Q Quit ",
-            )
-            .style(Style::default().fg(MUTED))
-            .block(
-                Block::default().borders(Borders::ALL),
-            );
-
+            // One visible line inside the bordered footer (height = 3).
+            // Choose text that fits the actual available inner width.
+            let footer_width = sections[2].width.saturating_sub(2) as usize;
+            let footer_options = [
+                " ↑↓ Browse  Enter Play  X Random  A Queue  N Next  U Shuffle  T Repeat  ? Help ",
+                " Enter Play  X Random  U Shuffle  ? Help ",
+                " X Random  ? Help ",
+                " ? Help ",
+                "?",
+            ];
+            let footer_text = footer_options
+                .iter()
+                .find(|text| text.chars().count() <= footer_width)
+                .copied()
+                .unwrap_or("");
+            let footer = Paragraph::new(footer_text)
+                .style(Style::default().fg(MUTED))
+                .block(Block::default().borders(Borders::ALL));
             frame.render_widget(footer, sections[2]);
+
+            if app.show_help {
+                let area = frame.area();
+                let popup = ratatui::layout::Rect {
+                    x: area.x + area.width.saturating_sub(66) / 2,
+                    y: area.y + area.height.saturating_sub(20) / 2,
+                    width: area.width.min(66),
+                    height: area.height.min(20),
+                };
+                frame.render_widget(Clear, popup);
+                let help = Paragraph::new(concat!(
+                    "↑/↓ or J/K    Browse library\n",
+                    "→/← or L/H    Open / Back\n",
+                    "Enter         Play selected track\n",
+                    "Space         Pause / Resume\n",
+                    "F / R         Seek forward / backward 10 seconds\n",
+                    "A             Add selected song to queue\n",
+                    "N             Play next queued / album track\n",
+                    "C             Clear queue\n",
+                    "T             Repeat: Off / Song / Album\n",
+                    "U             Shuffle: Off / Album / Library\n",
+                    "X             Play random song from library\n",
+                    "S             Stop playback\n",
+                    "Q             Quit HEVY\n",
+                    "? or Esc      Close help",
+                ))
+                .wrap(ratatui::widgets::Wrap { trim: false })
+                .style(Style::default().fg(TEXT))
+                .block(
+                    Block::default()
+                        .title(" HEVY HELP ")
+                        .borders(Borders::ALL)
+                        .border_style(Style::default().fg(PURPLE)),
+                );
+                frame.render_widget(help, popup);
+            }
         })?;
 
         // Redraw every 100 milliseconds.
@@ -473,7 +619,15 @@ fn run(
                 continue;
             }
 
+            if app.show_help {
+                if matches!(key.code, KeyCode::Char('?') | KeyCode::Esc) {
+                    app.show_help = false;
+                }
+                continue;
+            }
+
             match key.code {
+                KeyCode::Char('?') => app.show_help = true,
                 KeyCode::Char('q') | KeyCode::Esc => break,
 
                 KeyCode::Up | KeyCode::Char('k') => {
@@ -524,8 +678,68 @@ fn run(
                     }
                 }
 
+                // Add the selected song to the end of the queue.
+                KeyCode::Char('a') => {
+                    if let View::Songs(artist, album) = &app.view {
+                        if music
+                            .get(artist)
+                            .and_then(|albums| albums.get(album))
+                            .and_then(|tracks| tracks.get(app.selected))
+                            .is_some()
+                        {
+                            app.queue.push_back(PlayingTrack {
+                                artist: artist.clone(),
+                                album: album.clone(),
+                                index: app.selected,
+                            });
+                            app.status = format!("Queued {} track(s)", app.queue.len());
+                        }
+                    }
+                }
+
+                // Skip to the next queued song, or continue album playback.
+                KeyCode::Char('n') => {
+                    if app.playing_track.is_some() || !app.queue.is_empty() {
+                        advance(&mut app, &mut audio, &music);
+                    }
+                }
+
+                KeyCode::Char('c') => {
+                    app.queue.clear();
+                    app.status = "Queue cleared".into();
+                }
+
                 KeyCode::Char('t') => {
                     app.repeat_mode = app.repeat_mode.next();
+                }
+
+                KeyCode::Char('u') => {
+                    app.shuffle_mode = app.shuffle_mode.next();
+                }
+
+                // Start a random song immediately, without changing shuffle or queue.
+                KeyCode::Char('x') => {
+                    let all_tracks: Vec<PlayingTrack> = music
+                        .iter()
+                        .flat_map(|(artist, albums)| {
+                            albums.iter().flat_map(move |(album, tracks)| {
+                                (0..tracks.len()).map(move |index| PlayingTrack {
+                                    artist: artist.clone(),
+                                    album: album.clone(),
+                                    index,
+                                })
+                            })
+                        })
+                        .collect();
+
+                    if all_tracks.is_empty() {
+                        app.status = "Music library is empty".into();
+                    } else {
+                        let selected = &all_tracks[random_index(all_tracks.len())];
+                        if let Some(song) = queued_song(&music, selected) {
+                            start_track(&mut app, &mut audio, song, selected.index);
+                        }
+                    }
                 }
 
                 KeyCode::Char('s') => {
