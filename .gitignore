@@ -1,4 +1,10 @@
-/target
+/target/
+/dist/
+/pkg/
+/src/audrune/
+/*.pkg.tar.zst
+/*.pkg.tar.zst.sig
+/*.tar.gz
 
 # Local source backups
 *.backup
