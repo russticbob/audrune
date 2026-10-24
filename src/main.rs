@@ -596,7 +596,7 @@ fn run(
                 .split(frame.area());
 
             // Header.
-            let header = Paragraph::new("◆ HEVY / LOCAL MUSIC")
+            let header = Paragraph::new("◆ AUDRUNE / LOCAL MUSIC")
                 .style(Style::default().fg(CYAN).add_modifier(Modifier::BOLD))
                 .block(
                     Block::default()
@@ -707,7 +707,7 @@ fn run(
                 .style(Style::default().fg(TEXT))
                 .block(
                     Block::default()
-                        .title(" HEVY PLAYER ")
+                        .title(" AUDRUNE PLAYER ")
                         .borders(Borders::ALL)
                         .border_style(Style::default().fg(PURPLE)),
                 );
@@ -830,14 +830,14 @@ fn run(
                     "Z             Remove highlighted playlist song\n",
                     "Enter         Open / play playlist tracks\n",
                     "S             Stop playback\n",
-                    "Q             Quit HEVY\n",
+                    "Q             Quit AUDRUNE\n",
                     "? or Esc      Close help",
                 ))
                 .wrap(ratatui::widgets::Wrap { trim: false })
                 .style(Style::default().fg(TEXT))
                 .block(
                     Block::default()
-                        .title(" HEVY HELP ")
+                        .title(" AUDRUNE HELP ")
                         .borders(Borders::ALL)
                         .border_style(Style::default().fg(PURPLE)),
                 );

@@ -16,7 +16,7 @@ AUDRUNE is being developed to provide a unified experience that supports both st
 
 The long-term goal is to allow users to discover music through supported streaming services, purchase albums from digital retailers, and automatically organize downloaded files within their local music libraries.
 
-Throughout development, HEVY will prioritize performance, usability, customization, and user control.
+Throughout development, AUDRUNE will prioritize performance, usability, customization, and user control.
 
 ## Current Features
 
@@ -33,7 +33,7 @@ Throughout development, HEVY will prioritize performance, usability, customizati
 
 ### Audio Formats
 
-HEVY currently recognizes the following file extensions:
+AUDRUNE currently recognizes the following file extensions:
 
 - MP3
 - FLAC
@@ -46,7 +46,7 @@ Playback compatibility depends on the codecs supported by the audio backend. Ful
 
 ## Installation
 
-HEVY is currently available as source code. Prebuilt packages and distribution-specific installation methods may be introduced in future releases.
+AUDRUNE is currently available as source code. Prebuilt packages and distribution-specific installation methods may be introduced in future releases.
 
 ### Requirements
 
@@ -60,8 +60,8 @@ HEVY is currently available as source code. Prebuilt packages and distribution-s
 Clone the repository:
 
 ```bash
-git clone https://github.com/russticbob/hevy.git
-cd hevy
+git clone https://github.com/russticbob/audrune.git
+cd audrune
 ```
 
 Build the application:
