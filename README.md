@@ -1,18 +1,18 @@
-# HEVY
+# AUDRUNE
 
 **A modern, terminal-based music player for Linux.**
 
-HEVY is an open-source music player written in Rust, designed to provide a fast, intuitive, and customizable listening experience directly from the terminal.
+AUDRUNE is an open-source music player written in Rust, designed to provide a fast, intuitive, and customizable listening experience directly from the terminal.
 
 The project aims to bring local music libraries, streaming services, and digital music purchases together in a single application, giving users greater flexibility in how they discover, manage, and enjoy music.
 
-HEVY is currently in early development, with functional local library browsing and audio playback.
+AUDRUNE is currently in early development, with functional local library browsing and audio playback.
 
 ## Overview
 
 Music listening has increasingly shifted toward subscription-based streaming platforms. While these services offer convenience and extensive catalogs, managing a personal music collection often requires separate applications and workflows.
 
-HEVY is being developed to provide a unified experience that supports both streaming and locally owned music.
+AUDRUNE is being developed to provide a unified experience that supports both streaming and locally owned music.
 
 The long-term goal is to allow users to discover music through supported streaming services, purchase albums from digital retailers, and automatically organize downloaded files within their local music libraries.
 
@@ -70,13 +70,13 @@ Build the application:
 cargo build --release
 ```
 
-Run HEVY:
+Run AUDRUNE:
 
 ```bash
 cargo run --release
 ```
 
-HEVY currently scans the user's `~/Music` directory. Support for configurable library locations is planned.
+AUDRUNE currently scans the user's `~/Music` directory. Support for configurable library locations is planned.
 
 ## Keyboard Controls
 
@@ -93,7 +93,7 @@ HEVY currently scans the user's `~/Music` directory. Support for configurable li
 
 ## Development Roadmap
 
-HEVY is under active development. The following roadmap outlines planned functionality and may evolve as the project progresses.
+AUDRUNE is under active development. The following roadmap outlines planned functionality and may evolve as the project progresses.
 
 ### Phase 1 — Core Playback
 
@@ -150,7 +150,7 @@ Streaming functionality will depend on the availability, licensing requirements,
 
 ## Technology Stack
 
-HEVY is developed in Rust using the following libraries:
+AUDRUNE is developed in Rust using the following libraries:
 
 | Component | Technology |
 |---|---|
@@ -166,7 +166,7 @@ The application is designed around a modular architecture to support future expa
 
 ### Performance
 
-HEVY aims to remain lightweight and responsive, with efficient library management and minimal unnecessary resource consumption.
+AUDRUNE aims to remain lightweight and responsive, with efficient library management and minimal unnecessary resource consumption.
 
 ### Accessibility and Usability
 
@@ -176,7 +176,7 @@ A keyboard-first interface provides direct access to essential playback and navi
 
 Streaming services provide convenient access to music, while locally owned files offer greater independence and long-term availability.
 
-HEVY aims to support both approaches, making it easier to maintain a permanent music collection without sacrificing the convenience of streaming.
+AUDRUNE aims to support both approaches, making it easier to maintain a permanent music collection without sacrificing the convenience of streaming.
 
 ### Customization
 
@@ -184,11 +184,11 @@ The interface is being designed with customization in mind, including future sup
 
 ### Open Development
 
-HEVY is developed openly, with an emphasis on maintainable code, clear documentation, and community participation.
+AUDRUNE is developed openly, with an emphasis on maintainable code, clear documentation, and community participation.
 
 ## Contributing
 
-HEVY is an early-stage project, and contributions are welcome.
+AUDRUNE is an early-stage project, and contributions are welcome.
 
 Developers and users are encouraged to submit bug reports, feature suggestions, and improvement proposals through GitHub Issues.
 
@@ -198,7 +198,7 @@ As the project matures, additional contribution guidelines and development docum
 
 **Early development / Pre-release**
 
-HEVY currently provides functional local music browsing and basic audio playback on Linux.
+AUDRUNE currently provides functional local music browsing and basic audio playback on Linux.
 
 The application is not yet considered feature-complete or production-ready. Features described in the roadmap are planned and should not be interpreted as currently available.
 
@@ -208,4 +208,3 @@ A software license will be selected and published before the project's initial p
 
 ---
 
-**HEVY — Your music. Your terminal. Your choice.**
