@@ -1,6 +1,6 @@
 pkgname=audrune
-pkgver=0.7.0
-_pkgver=0.7.0-beta
+pkgver=0.7.1
+_pkgver=0.7.1-beta
 pkgrel=1
 pkgdesc="A terminal music player written in Rust"
 arch=('x86_64')
