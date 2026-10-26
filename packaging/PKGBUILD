@@ -1,6 +1,6 @@
 pkgname=audrune
-pkgver=0.7.1
-_pkgver=0.7.1-beta
+pkgver=0.7.3
+_pkgver=0.7.3-beta
 pkgrel=1
 pkgdesc="A terminal music player written in Rust"
 arch=('x86_64')
@@ -11,7 +11,7 @@ makedepends=('cargo')
 source=(
     "audrune-${_pkgver}.tar.gz::${url}/archive/refs/tags/v${_pkgver}.tar.gz"
 )
-sha256sums=('a7b7617ddaf0309adc7447fa46502e356eb8d71bc2d46e12c46c3282e17b3975')
+sha256sums=('b83a09b1017d02be0e8d799562173499d7cb9a148b062522aca0e9dfd56b9a6f')
 
 prepare() {
     cd "$srcdir"
