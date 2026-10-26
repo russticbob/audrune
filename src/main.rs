@@ -1,6 +1,16 @@
 mod library;
 mod player;
 
+use clap::Parser;
+
+#[derive(Debug, Parser)]
+#[command(name = "audrune", version, about = "A terminal music player for Linux")]
+struct Cli {
+    /// Import a local M3U or M3U8 playlist and exit
+    #[arg(short = 'i', long = "import", value_name = "FILE")]
+    import: Option<PathBuf>,
+}
+
 use std::{
     collections::{BTreeMap, VecDeque},
     fs, io,
@@ -221,6 +231,11 @@ fn format_time(duration: Duration) -> String {
 }
 
 fn main() -> io::Result<()> {
+    let cli = Cli::parse();
+    if let Some(path) = cli.import {
+        return import_playlist(&path);
+    }
+
     let music_dir =
         PathBuf::from(std::env::var_os("HOME").expect("HOME directory not found")).join("Music");
 
@@ -442,6 +457,113 @@ fn save_playlist(dir: &Path, name: &str, paths: &[PathBuf]) -> io::Result<()> {
         contents.push('\n');
     }
     fs::write(dir.join(format!("{name}.m3u8")), contents)
+}
+
+// Import a playlist without changing its source or touching any audio files.
+// Existing playlist names are protected by create_new(true), even under races.
+fn import_playlist(source: &Path) -> io::Result<()> {
+    let extension = source.extension().and_then(|ext| ext.to_str());
+    if !matches!(extension, Some(ext) if ext.eq_ignore_ascii_case("m3u") || ext.eq_ignore_ascii_case("m3u8"))
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Expected an .m3u or .m3u8 file",
+        ));
+    }
+
+    let source = fs::canonicalize(source)?;
+    if !source.is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Playlist source is not a regular file",
+        ));
+    }
+    let name = source
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .filter(|stem| valid_playlist_name(stem))
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "Invalid playlist filename"))?;
+    let parent = source
+        .parent()
+        .ok_or_else(|| io::Error::other("Playlist has no parent directory"))?;
+    let content = fs::read_to_string(&source)?;
+    let mut paths = Vec::new();
+    let mut missing = Vec::new();
+
+    for (index, raw_line) in content.trim_start_matches('\u{feff}').lines().enumerate() {
+        let line = raw_line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        // Remote playlists are not supported by AUDRUNE's local library.
+        if line.contains("://") {
+            eprintln!(
+                "Warning: skipping remote entry at line {}: {}",
+                index + 1,
+                line
+            );
+            continue;
+        }
+        let entry = Path::new(line);
+        let candidate = if entry.is_absolute() {
+            entry.to_path_buf()
+        } else {
+            parent.join(entry)
+        };
+        match fs::canonicalize(&candidate) {
+            Ok(resolved) if resolved.is_file() => paths.push(resolved),
+            _ => missing.push((index + 1, candidate)),
+        }
+    }
+    if paths.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Playlist contains no existing local tracks",
+        ));
+    }
+
+    let destination_dir = playlist_directory();
+    fs::create_dir_all(&destination_dir)?;
+    let destination = destination_dir.join(format!("{name}.m3u8"));
+    use std::io::Write;
+    let mut output = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&destination)?;
+    let write_result = (|| -> io::Result<()> {
+        output.write_all(b"#EXTM3U\n")?;
+        for path in &paths {
+            output.write_all(path.to_string_lossy().as_bytes())?;
+            output.write_all(b"\n")?;
+        }
+        output.flush()?;
+        Ok(())
+    })();
+    if let Err(error) = write_result {
+        drop(output);
+        let _ = fs::remove_file(&destination);
+        return Err(error);
+    }
+    println!(
+        "Imported '{}' ({} tracks) to {}",
+        name,
+        paths.len(),
+        destination.display()
+    );
+    for (line, path) in &missing {
+        eprintln!(
+            "Warning: missing or unreadable track at line {}: {}",
+            line,
+            path.display()
+        );
+    }
+    if !missing.is_empty() {
+        eprintln!(
+            "Skipped {} missing track(s). Original playlist was not modified.",
+            missing.len()
+        );
+    }
+    Ok(())
 }
 
 fn resolve_path(music: &MusicLibrary<'_>, path: &Path) -> Option<PlayingTrack> {

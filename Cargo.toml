@@ -1,10 +1,11 @@
 [package]
 name = "audrune"
-version = "0.7.1-beta"
+version = "0.7.3-beta"
 edition = "2024"
 license = "GPL-3.0-only"
 
 [dependencies]
+clap = { version = "4.6.7", features = ["derive"] }
 crossterm = "0.29.0"
 lofty = "0.25.4"
 ratatui = "0.30.2"
