@@ -8,7 +8,7 @@ AUDRUNE brings local music libraries, playlist management, playback queues, and 
 
 Built for Linux users who want control over their music without leaving the terminal.
 
-**Latest version: v0.7.1-beta** · **License: GPLv3** · **Platform: Linux**
+**Latest version: v0.7.3-beta** · **License: GPLv3** · **Platform: Linux**
 
 [Download AUDRUNE](https://github.com/russticbob/audrune/releases) · [Report a Bug](https://github.com/russticbob/audrune/issues) · [Source Code](https://github.com/russticbob/audrune)
 
